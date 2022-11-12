@@ -1,42 +1,40 @@
 import './App.css';
-import { io } from 'socket.io-client';
-import React, { useState, useEffect } from 'react';
-const socket = io.connect('http://localhost:4000');
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import Navigation from './components/Navigation';
+import Home from './pages/Home';
+import Login from './pages/Login';
+import Signup from './pages/Signup';
+import Chat from './pages/Chat';
+import { useSelector } from "react-redux";
+import { useState } from "react";
+import { AppContext, socket } from "./context/appContext";
 
 function App() {
-
-  // create a state to store the message
-  const [message, setMessage] = useState('');
-  const [messageReceived, setMessageReceived] = useState('No Messages Yet');
-  const [userName, setUserName] = useState('');
-
-  const sendMessage = (e) => {
-    e.preventDefault();
-    socket.emit('send-message', message, userName);
-  }
-
-  // listen for receive-message event
-  useEffect(() => {
-    socket.on('receive-message', (message) => {
-      // console.log(message);
-      setMessageReceived(message);
-      console.log(messageReceived);
-    });
-  }, []);
+  const [rooms, setRooms] = useState([]);
+  const [currentRoom, setCurrentRoom] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [privateMemberMsg, setPrivateMemberMsg] = useState({});
+  const [newMessages, setNewMessages] = useState({});
+  const user = useSelector((state) => state.user);
 
   return (
-    <div className="App">
+    <AppContext.Provider value={{ socket, currentRoom, setCurrentRoom, members, setMembers, messages, setMessages, privateMemberMsg, setPrivateMemberMsg, rooms, setRooms, newMessages, setNewMessages }}>
+            <BrowserRouter>
+                <Navigation />
+                <Routes>
+                    <Route path="/" element={<Home />} />
+                    {!user && (
+                        <>
+                            <Route path="/login" element={<Login />} />
+                            <Route path="/signup" element={<Signup />} />
+                        </>
+                    )}
+                    <Route path="/chat" element={<Chat />} />
+                </Routes>
+            </BrowserRouter>
+        </AppContext.Provider>
 
-      <form onSubmit={sendMessage}>
-        <input type="text" name="userName" placeholder="Enter your name" onChange={(e) => setUserName(e.target.value)} />
-        <input type="text" name="messageContent" placeholder="Message..." onChange={(e) => setMessage(e.target.value)} />
-        <button type="submit">Send</button>
-      </form>
-      
-      <h2>Messages</h2>
-      <p>{messageReceived}</p>
-      
-    </div>
   );
 }
 

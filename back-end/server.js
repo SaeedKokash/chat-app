@@ -1,94 +1,98 @@
-'use strict';
-
 const express = require('express');
-const cors = require('cors');
-require('dotenv').config();
-
-// socket io setup
-const socketIO = require('socket.io');
-const http = require('http');
-
-// message queue setup
-const { storeMessage, retrieveMessages } = require('./message-queue.js');
-
 const app = express();
-const PORT = process.env.PORT || 4000;
+const userRoutes = require('./routes/userRoutes')
+const User = require('./models/User');
+const Message = require('./models/Message')
+const rooms = ['Javascript', 'Python', 'Cyber Security', 'Just for Fun!'];
+const cors = require('cors');
 
-app.use(cors());
+app.use(express.urlencoded({extended: true}));
 app.use(express.json());
+app.use(cors());
 
-app.get('/', (req, res) => {
-    res.send('Hello to Chat-App')
-});
+app.use('/users', userRoutes)
+require('./connection')
 
-// create an object to store all users inside
-const allUsers = {};
+const server = require('http').createServer(app);
+const PORT = 4000;
+const io = require('socket.io')(server, {
+  cors: {
+    origin: 'http://localhost:3000',
+    methods: ['GET', 'POST']
+  }
+})
 
-// create a new http server for socket io
-const server = http.createServer(app);
 
-// create a socket connection
-const io = socketIO(server, {
-    transport: ['websocket', 'polling'],
-    cors: {
-        origin: 'http://localhost:3000',
-        methods: ['GET', 'POST'] 
-    }
-});
-
-io.on('connection', (socket) => {
-    console.log(`New user connected: ${socket.id}`);
-
-    // listen for new user
-    socket.on('new-user-joined', (userName) => {
-        console.log(`a new user connected: ${userName}`);
-        allUsers[socket.id] = userName;
-
-        socket.broadcast.emit('new-user-connected', userName);
-    });
-
-    // listen for send message and send a message to all users
-    socket.on('send-message', (message, userName) => {
-        allUsers[socket.id] = userName;
-        console.log(`a message is sent: ${userName}, ${message}`);
-
-        socket.broadcast.emit('receive-message', `${userName}: ${message}` )
-    });
-
-    // listen for disconnect and remove the user from the allUsers object
-    socket.on('disconnect', () => {
-        // allUsers[socket.id] = userName;
-        // console.log(allUsers[socket.id], userName);
-        console.log(`user disconnected: ${socket.id}`);
-        // socket.broadcast.emit('user-disconnected', `user disconnected: ${userName}`);
-        delete allUsers[socket.id];
-    });
-
-});
-
-// create a handler for the message queue system
-const messageQueueHandler = (socket) => {
-    // When a user disconnects, store the message in the message queue
-    socket.on('disconnect', () => {
-        storeMessage(socket.id, socket.message);
-    });
-
-    // When a user reconnects, retrieve the messages from the message queue and send them to the user
-    socket.on('connect', () => {
-        retrieveMessages(socket.id);
-    });
+async function getLastMessagesFromRoom(room){
+  let roomMessages = await Message.aggregate([
+    {$match: {to: room}},
+    {$group: {_id: '$date', messagesByDate: {$push: '$$ROOT'}}}
+  ])
+  return roomMessages;
 }
 
-app.get('/messages', (req, res) => {
-    res.send('Hello to Chat-App Messages')
-});
+function sortRoomMessagesByDate(messages){
+  return messages.sort(function(a, b){
+    let date1 = a._id.split('/');
+    let date2 = b._id.split('/');
 
-server.listen(PORT, () => {
-    console.log(`Server is running on port: ${PORT}`);
-});
+    date1 = date1[2] + date1[0] + date1[1]
+    date2 =  date2[2] + date2[0] + date2[1];
 
-// app.listen(PORT, () => {
-//     console.log(`Server is up and running on port ${PORT}`)
-// });
+    return date1 < date2 ? -1 : 1
+  })
+}
 
-module.exports = { app, io };
+// socket connection
+
+io.on('connection', (socket)=> {
+
+  socket.on('new-user', async ()=> {
+    const members = await User.find();
+    io.emit('new-user', members)
+  })
+
+  socket.on('join-room', async(newRoom, previousRoom)=> {
+    socket.join(newRoom);
+    socket.leave(previousRoom);
+    let roomMessages = await getLastMessagesFromRoom(newRoom);
+    roomMessages = sortRoomMessagesByDate(roomMessages);
+    socket.emit('room-messages', roomMessages)
+  })
+
+  socket.on('message-room', async(room, content, sender, time, date) => {
+    const newMessage = await Message.create({content, from: sender, time, date, to: room});
+    let roomMessages = await getLastMessagesFromRoom(room);
+    roomMessages = sortRoomMessagesByDate(roomMessages);
+    // sending message to room
+    io.to(room).emit('room-messages', roomMessages);
+    socket.broadcast.emit('notifications', room)
+  })
+
+  app.delete('/logout', async(req, res)=> {
+    try {
+      const {_id, newMessages} = req.body;
+      const user = await User.findById(_id);
+      user.status = "offline";
+      user.newMessages = newMessages;
+      await user.save();
+      const members = await User.find();
+      socket.broadcast.emit('new-user', members);
+      res.status(200).send();
+    } catch (e) {
+      console.log(e);
+      res.status(400).send()
+    }
+  })
+
+})
+
+
+app.get('/rooms', (req, res)=> {
+  res.json(rooms)
+})
+
+
+server.listen(PORT, ()=> {
+  console.log('listening to port', PORT)
+})
